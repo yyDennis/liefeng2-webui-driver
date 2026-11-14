@@ -28,8 +28,9 @@ export function computeFrameChecksum(frame, checkPos) {
   return sum;
 }
 
+// Length byte counts header + data + checksum; checksum is at length - 1.
 export function checkPosOf(frame) {
-  return frame[1] === 64 ? 63 : frame[1] - 2;
+  return frame[1] - 1;
 }
 
 export function buildFrame(marker, seq, block) {
