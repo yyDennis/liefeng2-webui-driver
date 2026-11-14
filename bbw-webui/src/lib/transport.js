@@ -5,6 +5,7 @@ import { chunkPayload, dechunkFrames, READ_QUERY } from "../../../bbw-protocol/s
 export { chunkPayload, dechunkFrames, READ_QUERY };
 
 const MARKER_READ = 0xd6;
+const CONFIG_USAGE_PAGES = new Set([0xff7a, 0xffab]);
 
 export class HidTransport {
   constructor() {
@@ -47,7 +48,7 @@ export class HidTransport {
     if (!("hid" in navigator)) throw new Error("浏览器不支持 WebHID");
     let devices;
     try {
-      // An empty filter list allows the user to select any available HID device.
+      // Empty filters let the user choose any available HID device.
       devices = await navigator.hid.requestDevice({ filters: [] });
     } catch (error) {
       console.error("WebHID device picker failed:", error);
@@ -55,19 +56,26 @@ export class HidTransport {
     }
     const diagnostics = HidTransport.enumerateDevices(devices);
     console.info("WebHID devices selected (usage pages and reports):", diagnostics);
+    // Prefer the controller's known configuration collection (Rainbow 3: FF7A,
+    // Gale 2: FFAB), requiring output reports; only then use a diagnostic fallback.
     const config = devices.find((d) =>
-      d.collections.some((c) => c.usagePage === 0xff7a && c.outputReports.length > 0));
+      d.collections.some((c) => CONFIG_USAGE_PAGES.has(c.usagePage) && c.outputReports.length > 0));
     const fallback = config ? null : devices.find((d) =>
       d.collections.some((c) => c.outputReports.length > 0));
     const selectedConfig = config || fallback;
     if (!config && fallback) {
-      console.warn("No MI_02 (usagePage 0xFF7A) found; trying selected output-report device:",
+      console.warn("No known config usage page (0xFF7A/0xFFAB) found; trying selected output-report device:",
         HidTransport.enumerateDevices([fallback]));
     }
     if (!selectedConfig) {
       console.error("No selected device has an output report. Selected device collections:", diagnostics);
       throw new Error("未找到带输出报告的配置通道;设备集合信息已记录到控制台");
     }
+    const configCollection = selectedConfig.collections.find((c) =>
+      CONFIG_USAGE_PAGES.has(c.usagePage) && c.outputReports.length > 0);
+    console.info("Selected configuration interface:", configCollection
+      ? { usagePage: `0x${configCollection.usagePage.toString(16)}`, outputReports: configCollection.outputReports.map((r) => r.reportId) }
+      : "unknown usage page (fallback)");
     const gamepad = devices.find((d) => this.isGamepadDev(d) && d !== selectedConfig);
     await selectedConfig.open();
     this.config = selectedConfig;
