@@ -47,17 +47,8 @@ export class HidTransport {
     if (!("hid" in navigator)) throw new Error("浏览器不支持 WebHID");
     let devices;
     try {
-      // Each filter has at least one matching criterion; OR across these entries.
-      // Covers known controller vendors plus generic gamepad/configuration usages.
-      devices = await navigator.hid.requestDevice({
-        filters: [
-          { vendorId: 0x413d },
-          { vendorId: 0xe2b7 },
-          { vendorId: 0x045e },
-          { usagePage: 0x01, usage: 0x05 },
-          { usagePage: 0xff7a },
-        ],
-      });
+      // An empty filter list allows the user to select any available HID device.
+      devices = await navigator.hid.requestDevice({ filters: [] });
     } catch (error) {
       console.error("WebHID device picker failed:", error);
       throw new Error(`打开 HID 设备选择器失败: ${error?.message || error}`);
