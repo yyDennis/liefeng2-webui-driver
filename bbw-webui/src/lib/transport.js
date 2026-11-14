@@ -49,19 +49,34 @@ export class HidTransport {
   async connect() {
     if (!("hid" in navigator)) throw new Error("浏览器不支持 WebHID");
     const devices = await navigator.hid.requestDevice({
-      filters: [{ vendorId: 0x413d, productId: 0x2104 }],
+      // Empty filter matches all HID devices; the user chooses explicitly in the browser picker.
+      filters: [{}],
     });
+    const diagnostics = HidTransport.enumerateDevices(devices);
+    console.info("WebHID devices selected (usage pages and reports):", diagnostics);
     const config = devices.find((d) =>
       d.collections.some((c) => c.usagePage === 0xff7a && c.outputReports.length > 0));
-    if (!config) throw new Error("未找到 MI_02 配置通道(usagePage 0xFF7A)");
-    const gamepad = devices.find((d) => this.isGamepadDev(d) && d !== config);
-    await config.open();
-    this.config = config;
+    // Some controller models may expose a different usage page. Fall back to a selected
+    // device with an output report so the user can diagnose/try it rather than failing early.
+    const fallback = config ? null : devices.find((d) =>
+      d.collections.some((c) => c.outputReports.length > 0));
+    const selectedConfig = config || fallback;
+    if (!config && fallback) {
+      console.warn("No MI_02 (usagePage 0xFF7A) found; trying selected output-report device:",
+        HidTransport.enumerateDevices([fallback]));
+    }
+    if (!selectedConfig) {
+      console.error("No selected device has an output report. Selected device collections:", diagnostics);
+      throw new Error("未找到带输出报告的配置通道;设备集合信息已记录到控制台");
+    }
+    const gamepad = devices.find((d) => this.isGamepadDev(d) && d !== selectedConfig);
+    await selectedConfig.open();
+    this.config = selectedConfig;
     this.queue = [];
     this.waiters = [];
     this.gamepadCbs = [];
-    this.devicesSeen = HidTransport.enumerateDevices(devices);
-    config.addEventListener("inputreport", (e) => {
+    this.devicesSeen = diagnostics;
+    selectedConfig.addEventListener("inputreport", (e) => {
       const b = new Uint8Array(e.data.buffer, e.data.byteOffset, e.data.byteLength);
       // 兼容:配置设备上出现的非配置帧(不以 a4 开头)按游戏手柄转发(不限长度,便于诊断)
       if (this.gamepad === null && b[0] !== 0xa4) {
@@ -84,7 +99,7 @@ export class HidTransport {
         this.gamepad = null; // 打不开则回退到配置设备上的非配置帧
       }
     }
-    return { config, gamepad: this.gamepad, devices: this.devicesSeen };
+    return { config: selectedConfig, gamepad: this.gamepad, devices: this.devicesSeen };
   }
 
   disconnect() {
