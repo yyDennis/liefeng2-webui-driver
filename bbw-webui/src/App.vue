@@ -12,6 +12,7 @@ import ConfigView from "./views/ConfigView.vue";
 
 const tab = ref("connect");
 const showLog = ref(false);
+const isReading = ref(false);
 const theme = ref("dark"); // dark | light | system
 const TABS = [
   ["connect", "连接设备"],
@@ -42,7 +43,8 @@ onMounted(() => {
 });
 
 async function doRead() {
-  if (!state.transport) return;
+  if (!state.transport || isReading.value) return;
+  isReading.value = true;
   try {
     pushLog("读取配置…");
     state.payload = await state.transport.readProfile();
@@ -51,6 +53,9 @@ async function doRead() {
     pushLog("读取完成,解析成功");
   } catch (e) {
     pushLog("读取失败: " + e.message);
+    console.error("Configuration read failed:", e);
+  } finally {
+    isReading.value = false;
   }
 }
 
@@ -63,8 +68,7 @@ async function doWrite() {
     state.payload = p;
     state.dirty = false;
     pushLog("写入完成(" + p.length + "B,9 帧),自动回读验证…");
-    await doRead(); // 写后自动回读
-    // 对比关键字段
+    await doRead();
     const back = state.payload;
     if (back) {
       const sameDz = back[5] === p[5] && back[6] === p[6] && back[7] === p[7] && back[8] === p[8];
@@ -104,8 +108,8 @@ async function doWrite() {
           {{ state.connected ? "已连接" : "未连接" }}
         </span>
         <span v-if="state.dirty" class="badge warn">⚠ 未写回</span>
-        <button class="btn small" :disabled="!state.connected" @click="doRead">读取</button>
-        <button class="btn small primary" :disabled="!state.connected || !state.profile" @click="doWrite">写入</button>
+        <button class="btn small" :disabled="!state.connected || isReading" @click="doRead">{{ isReading ? "读取中…" : "读取" }}</button>
+        <button class="btn small primary" :disabled="!state.connected || !state.profile || isReading" @click="doWrite">写入</button>
         <span class="spacer"></span>
         <button class="btn small ghost" @click="cycleTheme" :title="'主题:' + theme">{{ theme }}</button>
         <button class="btn small ghost" @click="showLog = !showLog">日志</button>
