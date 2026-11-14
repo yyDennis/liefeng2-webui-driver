@@ -17,6 +17,14 @@
   - **配置管理**:配置列表(本地命名保存多个配置、文件导入导出)+ profile JSON 备份 + 508B hex + 本地校验
 - 🧩 **协议库**(`bbw-protocol/`):独立 npm 模块,可被其他项目复用,40 项单元测试覆盖
 
+## ✨ Attribution & Gale 2 Support
+
+This repository is based on the original Better BigBig Won Assistant project by its upstream author, xbxsean. Please see the original project at https://github.com/xbxsean/-BBBWA-BetterBigBigWonAssistant- and its published web app at https://xbxsean.github.io/-BBBWA-BetterBigBigWonAssistant/.
+
+Dennis (@yyDennis) maintains this fork/version and independently reverse-engineered the BIGBIG WON Gale 2 (墨将烈风2) protocol using USB HID captures. The observed Gale 2 configuration interface identifies as VID `0xE2B7`, PID `0x122C`, usagePage `0xFFAB`; its profile read uses an 8-frame, 456-byte payload. This work adds Gale 2 read support and a safety-locked, read-only WebHID configuration view. Gale 2 writes remain disabled unless and until its write format is independently verified on hardware.
+
+The original project's authorship and license remain credited to the upstream project. This repository's Gale 2 protocol research and implementation are additional contributions by Dennis; no claim is made that the upstream author developed the Gale 2 support.
+
 ## 🖥️ 支持的设备
 
 > ⚠️ **兼容性提示**:本项目基于**墨将彩虹三(BIGBIG WON RAINBOW 3)**手柄进行开发与真机验证,协议字段以该型号实测为准。**不保证对其它墨将(BIGBIG WON)手柄型号的兼容性**,使用其它型号前请先读取配置确认解析正确,并做好配置备份。
@@ -110,9 +118,10 @@ node test/write-format-checksum.test.js
 
 ## 📚 协议要点(摘要)
 
-- **写数据流**:508 字节;`[0..1]` = CRC-16/MODBUS(覆盖 `[2..507]`),`[5..8]` = 扳机死区,`[14..301]` = 6 个摇杆曲线槽(48B/槽),`[380..507]` = 32 个键位槽(4B/槽)
+- **写数据流**:508 字节;`[0..1]` = CRC-16/MODBUS(覆盖 `[2..507]),`[5..8]` = 扳机死区,`[14..301]` = 6 个摇杆曲线槽(48B/槽),`[380..507]` = 32 个键位槽(4B/槽)
 - **传输**:64B HID 报告分块,每轮 9 帧(8×59B + 末块 36B),帧校验 = 前置字节和 mod 256
 - **读取**:发送固定查询帧 `a5 04 d6 7f`,设备回 9 帧重组
+- **Gale 2**:独立只读解析路径,8 帧 / 456 字节;写入保持安全锁定
 
 完整布局见 `bbw-protocol/src/write-format.js` 顶部注释与 `bbw-protocol/README.md`。
 
