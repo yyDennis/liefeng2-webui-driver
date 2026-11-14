@@ -8,16 +8,15 @@ const MARKER_READ = 0xd6;
 
 export class HidTransport {
   constructor() {
-    this.config = null;   // HIDDevice(MI_02 配置通道)
-    this.gamepad = null;  // HIDDevice(IG_00 游戏手柄输入,独立接口)
+    this.config = null;
+    this.gamepad = null;
     this.queue = [];
     this.waiters = [];
-    this.gamepadCbs = []; // IG_00 游戏手柄输入订阅
+    this.gamepadCbs = [];
   }
 
   get connected() { return !!this.config; }
 
-  /** 订阅游戏手柄输入报告(IG_00,15B) */
   onGamepad(cb) {
     this.gamepadCbs.push(cb);
     return () => {
@@ -26,13 +25,11 @@ export class HidTransport {
     };
   }
 
-  /** 识别游戏手柄设备:usagePage 0x01/usage 0x05,或存在 15B 输入报告 */
   isGamepadDev(dev) {
     return dev.collections.some((c) =>
       (c.usagePage === 0x01 && c.usage === 0x05) || c.inputReports.some((r) => r.reportLength === 15));
   }
 
-  /** 枚举摘要(诊断):所有匹配设备 + 集合能力 */
   static enumerateDevices(devices) {
     return devices.map((d, idx) => ({
       idx,
@@ -48,16 +45,27 @@ export class HidTransport {
 
   async connect() {
     if (!("hid" in navigator)) throw new Error("浏览器不支持 WebHID");
-    const devices = await navigator.hid.requestDevice({
-      // Empty filter matches all HID devices; the user chooses explicitly in the browser picker.
-      filters: [{}],
-    });
+    let devices;
+    try {
+      // Each filter has at least one matching criterion; OR across these entries.
+      // Covers known controller vendors plus generic gamepad/configuration usages.
+      devices = await navigator.hid.requestDevice({
+        filters: [
+          { vendorId: 0x413d },
+          { vendorId: 0xe2b7 },
+          { vendorId: 0x045e },
+          { usagePage: 0x01, usage: 0x05 },
+          { usagePage: 0xff7a },
+        ],
+      });
+    } catch (error) {
+      console.error("WebHID device picker failed:", error);
+      throw new Error(`打开 HID 设备选择器失败: ${error?.message || error}`);
+    }
     const diagnostics = HidTransport.enumerateDevices(devices);
     console.info("WebHID devices selected (usage pages and reports):", diagnostics);
     const config = devices.find((d) =>
       d.collections.some((c) => c.usagePage === 0xff7a && c.outputReports.length > 0));
-    // Some controller models may expose a different usage page. Fall back to a selected
-    // device with an output report so the user can diagnose/try it rather than failing early.
     const fallback = config ? null : devices.find((d) =>
       d.collections.some((c) => c.outputReports.length > 0));
     const selectedConfig = config || fallback;
@@ -78,7 +86,6 @@ export class HidTransport {
     this.devicesSeen = diagnostics;
     selectedConfig.addEventListener("inputreport", (e) => {
       const b = new Uint8Array(e.data.buffer, e.data.byteOffset, e.data.byteLength);
-      // 兼容:配置设备上出现的非配置帧(不以 a4 开头)按游戏手柄转发(不限长度,便于诊断)
       if (this.gamepad === null && b[0] !== 0xa4) {
         for (const cb of this.gamepadCbs) cb(b);
         return;
@@ -86,7 +93,6 @@ export class HidTransport {
       const w = this.waiters.shift();
       if (w) w(b); else this.queue.push(b);
     });
-    // 游戏手柄独立接口:打开并直接转发
     if (gamepad) {
       try {
         await gamepad.open();
@@ -96,7 +102,7 @@ export class HidTransport {
           for (const cb of this.gamepadCbs) cb(b);
         });
       } catch (e) {
-        this.gamepad = null; // 打不开则回退到配置设备上的非配置帧
+        this.gamepad = null;
       }
     }
     return { config: selectedConfig, gamepad: this.gamepad, devices: this.devicesSeen };
@@ -129,14 +135,12 @@ export class HidTransport {
     return dechunkFrames(sorted, { marker: MARKER_READ, validate: false });
   }
 
-  /** 读取 508B 配置数据流 */
   async readProfile() {
     const payload = await this.readFrames();
     if (payload.length !== 508) throw new Error(`数据流长度异常 ${payload.length}`);
     return payload;
   }
 
-  /** 写入 508B 配置数据流(d7 分帧) */
   async writeProfile(payload) {
     const frames = chunkPayload(payload, 0xd7);
     for (const f of frames) await this.config.sendReport(0, f);
