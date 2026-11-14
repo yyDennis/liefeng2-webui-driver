@@ -6,6 +6,7 @@ export { chunkPayload, dechunkFrames, READ_QUERY };
 
 const MARKER_READ = 0xd6;
 const CONFIG_USAGE_PAGES = new Set([0xff7a, 0xffab]);
+const READ_TIMEOUT_MS = 8000;
 
 export class HidTransport {
   constructor() {
@@ -14,6 +15,7 @@ export class HidTransport {
     this.queue = [];
     this.waiters = [];
     this.gamepadCbs = [];
+    this.isReading = false;
   }
 
   get connected() { return !!this.config; }
@@ -48,7 +50,6 @@ export class HidTransport {
     if (!("hid" in navigator)) throw new Error("浏览器不支持 WebHID");
     let devices;
     try {
-      // Empty filters let the user choose any available HID device.
       devices = await navigator.hid.requestDevice({ filters: [] });
     } catch (error) {
       console.error("WebHID device picker failed:", error);
@@ -56,12 +57,9 @@ export class HidTransport {
     }
     const diagnostics = HidTransport.enumerateDevices(devices);
     console.info("WebHID devices selected (usage pages and reports):", diagnostics);
-    // Prefer the controller's known configuration collection (Rainbow 3: FF7A,
-    // Gale 2: FFAB), requiring output reports; only then use a diagnostic fallback.
     const config = devices.find((d) =>
       d.collections.some((c) => CONFIG_USAGE_PAGES.has(c.usagePage) && c.outputReports.length > 0));
-    const fallback = config ? null : devices.find((d) =>
-      d.collections.some((c) => c.outputReports.length > 0));
+    const fallback = config ? null : devices.find((d) => d.collections.some((c) => c.outputReports.length > 0));
     const selectedConfig = config || fallback;
     if (!config && fallback) {
       console.warn("No known config usage page (0xFF7A/0xFFAB) found; trying selected output-report device:",
@@ -112,7 +110,7 @@ export class HidTransport {
     if (this.gamepad) { try { this.gamepad.close(); } catch {} this.gamepad = null; }
   }
 
-  nextInput(timeout = 4000) {
+  nextInput(timeout = READ_TIMEOUT_MS) {
     if (this.queue.length) return Promise.resolve(this.queue.shift());
     return new Promise((res, rej) => {
       const t = setTimeout(() => rej(new Error("等待输入超时")), timeout);
@@ -121,17 +119,48 @@ export class HidTransport {
   }
 
   async readFrames() {
-    await this.config.sendReport(0, READ_QUERY);
+    if (this.isReading) throw new Error("读取正在进行中");
+    if (!this.config) throw new Error("设备未连接");
+    this.isReading = true;
     const frames = new Map();
-    const deadline = Date.now() + 5000;
-    while (frames.size < 9 && Date.now() < deadline) {
-      const b = await this.nextInput();
-      if (b.length < 64 || b[0] !== 0xa4 || b[2] !== MARKER_READ) continue;
-      frames.set(b[3], b);
+    try {
+      // Drop old queued reports so frames from an earlier/abandoned read cannot be mixed in.
+      this.queue = [];
+      console.info("Sending configuration read query; expecting frame sequence 1-9");
+      await this.config.sendReport(0, READ_QUERY);
+      const deadline = Date.now() + READ_TIMEOUT_MS;
+      while (frames.size < 9 && Date.now() < deadline) {
+        const remaining = Math.max(1, deadline - Date.now());
+        let b;
+        try {
+          b = await this.nextInput(remaining);
+        } catch (e) {
+          break;
+        }
+        if (b.length < 64 || b[0] !== 0xa4 || b[2] !== MARKER_READ) {
+          console.warn("Ignoring unexpected HID input report:", { length: b.length, header: [...b.slice(0, 4)] });
+          continue;
+        }
+        const seq = b[3];
+        if (seq < 1 || seq > 9) {
+          console.warn("Ignoring out-of-range config frame sequence:", seq);
+          continue;
+        }
+        if (!frames.has(seq)) frames.set(seq, b);
+        const received = [...frames.keys()].sort((a, b) => a - b);
+        console.info(`已收到帧: [${received.join(", ")}], 等待中...`);
+      }
+      const received = [...frames.keys()].sort((a, b) => a - b);
+      const missing = Array.from({ length: 9 }, (_, i) => i + 1).filter((seq) => !frames.has(seq));
+      if (missing.length) {
+        console.error("Configuration read incomplete:", { received, missing, timeoutMs: READ_TIMEOUT_MS });
+        throw new Error(`只收到 ${received.length}/9 帧;已收到 [${received.join(", ")}], 缺少 [${missing.join(", ")}]`);
+      }
+      const sorted = received.map((seq) => frames.get(seq));
+      return dechunkFrames(sorted, { marker: MARKER_READ, validate: false });
+    } finally {
+      this.isReading = false;
     }
-    if (frames.size < 9) throw new Error(`只收到 ${frames.size}/9 帧`);
-    const sorted = [...frames.entries()].sort((a, b) => a[0] - b[0]).map((x) => x[1]);
-    return dechunkFrames(sorted, { marker: MARKER_READ, validate: false });
   }
 
   async readProfile() {
